@@ -30,12 +30,12 @@ class S3Operations(object):
         )
         if (
             self.s3_settings_doc.aws_key and
-            self.s3_settings_doc.aws_secret
+            self.s3_settings_doc.get_password('aws_secret')
         ):
             self.S3_CLIENT = boto3.client(
                 's3',
                 aws_access_key_id=self.s3_settings_doc.aws_key,
-                aws_secret_access_key=self.s3_settings_doc.aws_secret,
+                aws_secret_access_key=self.s3_settings_doc.get_password('aws_secret'),
                 region_name=self.s3_settings_doc.region_name,
                 config=Config(signature_version='s3v4')
             )
@@ -232,8 +232,26 @@ def file_upload_to_s3(doc, method):
 def generate_file(key=None, file_name=None):
     """
     Function to stream file from s3.
+    Validates that the requesting user has permission to access the file.
     """
     if key:
+        # Look up the File record by content_hash to verify it exists
+        # and that the current user has permission to access it.
+        file_name_record = frappe.db.get_value(
+            'File',
+            {'content_hash': key},
+            'name'
+        )
+        if not file_name_record:
+            frappe.throw(
+                frappe._("File not found."),
+                frappe.DoesNotExistError
+            )
+
+        # This will raise frappe.PermissionError if the user
+        # does not have read access to this File record.
+        frappe.has_permission('File', doc=file_name_record, throw=True)
+
         s3_upload = S3Operations()
         signed_url = s3_upload.get_url(key, file_name)
         frappe.local.response["type"] = "redirect"
@@ -306,6 +324,7 @@ def migrate_existing_files():
     """
     Function to migrate the existing files to s3.
     """
+    frappe.only_for('System Manager')
 
     files_list = frappe.get_all(
         'File',
