@@ -37,13 +37,13 @@ class S3Operations(object):
                 aws_access_key_id=self.s3_settings_doc.aws_key,
                 aws_secret_access_key=self.s3_settings_doc.get_password('aws_secret'),
                 region_name=self.s3_settings_doc.region_name,
-                config=Config(signature_version='s3v4')
+                config=Config(signature_version='s3v4', s3={'addressing_style': 'virtual'})
             )
         else:
             self.S3_CLIENT = boto3.client(
                 's3',
                 region_name=self.s3_settings_doc.region_name,
-                config=Config(signature_version='s3v4')
+                config=Config(signature_version='s3v4', s3={'addressing_style': 'virtual'})
             )
         self.BUCKET = self.s3_settings_doc.bucket_name
         self.folder_name = self.s3_settings_doc.folder_name
@@ -173,7 +173,7 @@ class S3Operations(object):
 
         }
         if file_name:
-            params['ResponseContentDisposition'] = 'filename={}'.format(file_name)
+            params['ResponseContentDisposition'] = 'attachment; filename="{}"'.format(file_name)
 
         url = self.S3_CLIENT.generate_presigned_url(
             'get_object',
@@ -271,7 +271,7 @@ def upload_existing_files_s3(name):
         s3_upload = S3Operations()
         path = doc.file_url
         site_path = frappe.utils.get_site_path()
-        parent_doctype = doc.attached_to_doctype
+        parent_doctype = doc.attached_to_doctype or 'File'
         parent_name = doc.attached_to_name
         if not doc.is_private:
             file_path = site_path + '/public' + path
