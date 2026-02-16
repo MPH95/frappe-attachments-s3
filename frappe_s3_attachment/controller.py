@@ -5,6 +5,7 @@ import os
 import random
 import re
 import string
+from urllib.parse import quote
 
 import boto3
 
@@ -189,6 +190,10 @@ def file_upload_to_s3(doc, method):
     """
     check and upload files to s3. the path check and
     """
+    # Skip folders and records without a file URL (nothing to upload).
+    if doc.is_folder or not doc.file_url:
+        return
+
     s3_upload = S3Operations()
     path = doc.file_url
     site_path = frappe.utils.get_site_path()
@@ -208,7 +213,9 @@ def file_upload_to_s3(doc, method):
 
         if doc.is_private:
             method = "frappe_s3_attachment.controller.generate_file"
-            file_url = """/api/method/{0}?key={1}&file_name={2}""".format(method, key, doc.file_name)
+            file_url = "/api/method/{0}?key={1}&file_name={2}".format(
+                method, quote(key), quote(doc.file_name)
+            )
         else:
             file_url = '{}/{}/{}'.format(
                 s3_upload.S3_CLIENT.meta.endpoint_url,
@@ -268,6 +275,9 @@ def upload_existing_files_s3(name):
     file_doc_name = frappe.db.get_value('File', {'name': name})
     if file_doc_name:
         doc = frappe.get_doc('File', name)
+        # Skip folders and records without a file URL.
+        if doc.is_folder or not doc.file_url:
+            return
         s3_upload = S3Operations()
         path = doc.file_url
         site_path = frappe.utils.get_site_path()
@@ -290,7 +300,7 @@ def upload_existing_files_s3(name):
 
         if doc.is_private:
             method = "frappe_s3_attachment.controller.generate_file"
-            file_url = """/api/method/{0}?key={1}""".format(method, key)
+            file_url = "/api/method/{0}?key={1}".format(method, quote(key))
         else:
             file_url = '{}/{}/{}'.format(
                 s3_upload.S3_CLIENT.meta.endpoint_url,
@@ -322,19 +332,64 @@ def s3_file_regex_match(file_url):
 @frappe.whitelist()
 def migrate_existing_files():
     """
-    Function to migrate the existing files to s3.
+    Enqueue the migration of existing files to s3 as a background job.
     """
     frappe.only_for('System Manager')
 
+    frappe.enqueue(
+        _migrate_existing_files_job,
+        queue='long',
+        timeout=3600,
+    )
+    frappe.msgprint(
+        frappe._('File migration to S3 has been queued. You can track progress in the Error Log.'),
+        alert=True,
+    )
+    return True
+
+
+def _migrate_existing_files_job():
+    """
+    Background job that migrates existing local files to s3.
+    """
     files_list = frappe.get_all(
         'File',
-        fields=['name', 'file_url']
+        fields=['name', 'file_url', 'is_folder'],
+        filters={'is_folder': 0},
     )
-    for file in files_list:
-        if file['file_url']:
-            if not s3_file_regex_match(file['file_url']):
+
+    total = len(files_list)
+    migrated = 0
+    skipped = 0
+    failed = 0
+
+    for i, file in enumerate(files_list):
+        try:
+            if file['file_url'] and not s3_file_regex_match(file['file_url']):
                 upload_existing_files_s3(file['name'])
-    return True
+                migrated += 1
+            else:
+                skipped += 1
+        except Exception:
+            failed += 1
+            frappe.log_error(
+                title='S3 Migration Error',
+                message=frappe.get_traceback()
+            )
+
+        # Publish progress every 10 files.
+        if (i + 1) % 10 == 0 or (i + 1) == total:
+            frappe.publish_realtime(
+                's3_migration_progress',
+                {'current': i + 1, 'total': total},
+            )
+
+    frappe.log_error(
+        title='S3 Migration Complete',
+        message='Migrated: {}, Skipped: {}, Failed: {}, Total: {}'.format(
+            migrated, skipped, failed, total
+        ),
+    )
 
 
 def delete_from_cloud(doc, method):
