@@ -111,33 +111,36 @@ class S3Operations(object):
         mime_type = magic.from_file(file_path, mime=True)
         key = self.key_generator(file_name, parent_doctype, parent_name)
         content_type = mime_type
+        extra_args = {
+            "ContentType": content_type,
+            "Metadata": {
+                "ContentType": content_type,
+                "file_name": file_name,
+            },
+        }
+
         try:
             if is_private:
                 self.S3_CLIENT.upload_file(
-                    file_path, self.BUCKET, key,
-                    ExtraArgs={
-                        "ContentType": content_type,
-                        "Metadata": {
-                            "ContentType": content_type,
-                            "file_name": file_name
-                        }
-                    }
+                    file_path, self.BUCKET, key, ExtraArgs=extra_args
                 )
             else:
-                self.S3_CLIENT.upload_file(
-                    file_path, self.BUCKET, key,
-                    ExtraArgs={
-                        "ContentType": content_type,
-                        "ACL": 'public-read',
-                        "Metadata": {
-                            "ContentType": content_type,
+                try:
+                    public_args = {**extra_args, "ACL": "public-read"}
+                    self.S3_CLIENT.upload_file(
+                        file_path, self.BUCKET, key, ExtraArgs=public_args
+                    )
+                except Exception:
+                    self.S3_CLIENT.upload_file(
+                        file_path, self.BUCKET, key, ExtraArgs=extra_args
+                    )
 
-                        }
-                    }
-                )
-
-        except boto3.exceptions.S3UploadFailedError:
-            frappe.throw(frappe._("File Upload Failed. Please try again."))
+        except Exception as e:
+            frappe.log_error(
+                title="S3 Upload Error",
+                message="File: {}\nKey: {}\nError: {}".format(file_name, key, str(e)),
+            )
+            raise
         return key
 
     def delete_from_s3(self, key):
@@ -194,17 +197,33 @@ def file_upload_to_s3(doc, method):
     if doc.is_folder or not doc.file_url:
         return
 
+    # Skip if the URL already points to S3 (avoids re-uploading).
+    if s3_file_regex_match(doc.file_url):
+        return
+
     s3_upload = S3Operations()
     path = doc.file_url
     site_path = frappe.utils.get_site_path()
     parent_doctype = doc.attached_to_doctype or 'File'
     parent_name = doc.attached_to_name
-    ignore_s3_upload_for_doctype = frappe.local.conf.get('ignore_s3_upload_for_doctype') or ['Data Import', 'Prepared Report']
+    ignore_s3_upload_for_doctype = frappe.local.conf.get('ignore_s3_upload_for_doctype') or [
+        'Data Import',
+        'Prepared Report',
+        'Repost Item Valuation',
+    ]
     if parent_doctype not in ignore_s3_upload_for_doctype:
         if not doc.is_private:
             file_path = site_path + '/public' + path
         else:
             file_path = site_path + path
+
+        if not os.path.exists(file_path):
+            frappe.log_error(
+                title="S3 Upload Skipped",
+                message="Local file not found: {}".format(file_path),
+            )
+            return
+
         key = s3_upload.upload_files_to_s3_with_key(
             file_path, doc.file_name,
             doc.is_private, parent_doctype,
