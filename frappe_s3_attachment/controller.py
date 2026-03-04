@@ -411,6 +411,47 @@ def _migrate_existing_files_job():
     )
 
 
+def inline_s3_images(html):
+    """Convert S3 private image URLs to inline base64 so wkhtmltopdf
+    can render them without needing a session cookie."""
+    import base64
+    import mimetypes
+    from urllib.parse import parse_qs, urlparse
+
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "html.parser")
+    s3 = None
+
+    for img in soup.find_all("img"):
+        src = img.get("src", "")
+        if "/api/method/frappe_s3_attachment.controller.generate_file" not in src:
+            continue
+
+        parsed = urlparse(src.replace("&amp;", "&"))
+        params = parse_qs(parsed.query)
+        key = params.get("key", [None])[0]
+        file_name = params.get("file_name", [None])[0]
+        if not key:
+            continue
+
+        mime_type = mimetypes.guess_type(file_name or key)[0]
+        if not mime_type or not mime_type.startswith("image/"):
+            continue
+
+        try:
+            if s3 is None:
+                s3 = S3Operations()
+            response = s3.read_file_from_s3(key)
+            content = response["Body"].read()
+            b64 = base64.b64encode(content).decode()
+            img["src"] = "data:{};base64,{}".format(mime_type, b64)
+        except Exception:
+            pass
+
+    return str(soup)
+
+
 def delete_from_cloud(doc, method):
     """Delete file from s3"""
     s3 = S3Operations()
