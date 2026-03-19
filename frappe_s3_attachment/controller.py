@@ -5,8 +5,6 @@ import os
 import random
 import re
 import string
-from urllib.parse import quote
-
 import boto3
 
 from botocore.client import Config
@@ -76,6 +74,7 @@ class S3Operations(object):
 
         file_name = file_name.replace(' ', '_')
         file_name = self.strip_special_chars(file_name)
+        parent_doctype = parent_doctype.replace(' ', '_')
         key = ''.join(
             random.choice(
                 string.ascii_uppercase + string.digits) for _ in range(8)
@@ -233,7 +232,7 @@ def file_upload_to_s3(doc, method):
         if doc.is_private:
             method = "frappe_s3_attachment.controller.generate_file"
             file_url = "/api/method/{0}?key={1}&file_name={2}".format(
-                method, quote(key), quote(doc.file_name)
+                method, key, doc.file_name
             )
         else:
             file_url = '{}/{}/{}'.format(
@@ -319,7 +318,7 @@ def upload_existing_files_s3(name):
 
         if doc.is_private:
             method = "frappe_s3_attachment.controller.generate_file"
-            file_url = "/api/method/{0}?key={1}".format(method, quote(key))
+            file_url = "/api/method/{0}?key={1}".format(method, key)
         else:
             file_url = '{}/{}/{}'.format(
                 s3_upload.S3_CLIENT.meta.endpoint_url,
